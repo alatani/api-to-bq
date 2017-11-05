@@ -1,0 +1,14 @@
+{
+  "name": "api-to-bq",
+  "version": "1.0.0",
+  "description": "fetch data via HTTP GET, putting into BigQuery",
+  "main": "api_to_bq.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Narita,Atsuhiro",
+  "license": "ISC",
+  "dependencies": {
+    "gcloud": "latest"
+  } 
+}
