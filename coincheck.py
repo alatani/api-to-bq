@@ -2,12 +2,28 @@
 import websocket
 import time
 import sys
-
+import datetime
 
 import json
 
-[41317125,"btc_jpy","785200.0","0.005","buy"]
-["btc_jpy",{"bids":[["785180.0","0"],["785149.0","0"],["784095.0","0"],["784094.0","0"],["784020.0","0"],["783813.0","0"],["783106.0","0"],["785181.0","0.17094015"],["785175.0","0.17094146"],["784966.0","0.6121"],["784819.0","0.61837588"],["784340.0","0.45"],["784140.0","0.45"],["784097.0","0.5377"],["783163.0","2.5394"]],"asks":[["785200.0","0.28660384"],["785600.0","0.45"],["788676.0","0.05"]]}]
+import sched, time
+
+class PeriodicDataCollectionScheduler():
+    def __init__(self, interval):
+        self.scheduler = sched.scheduler(time.time, time.sleep)
+        self.priority = 10
+        self.interval = interval
+
+    def run(self):
+        self.scheduler.enterabs(self.interval, self.priority, self.ontick())
+
+    def ontick(self):
+        self.fetch()
+        self.scheduler.enterabs(self.interval, self.priority, self.ontick())
+
+    def fetch(self): 
+        print("fetched")
+
 
 
 class CoincheckWebSocketReader():
@@ -29,7 +45,8 @@ class CoincheckWebSocketReader():
 
     def on_message(self, ws, message):
         #print("### message ###")
-        print(len(message), message)
+        now = datetime.datetime.now()
+        print(str(now), message)
     
     def on_error(self, ws, error):
         print(error)
@@ -41,9 +58,12 @@ class CoincheckWebSocketReader():
     def on_open(self, ws):
         print("### open ###")
         ws.send(json.dumps({"type":"subscribe", "channel":"btc_jpy-trades"}))
-        ws.send(json.dumps({"type":"subscribe", "channel":"btc_jpy-orderbook"}))
+        #ws.send(json.dumps({"type":"subscribe", "channel":"btc_jpy-orderbook"}))
 
 if __name__=="__main__":
-    btc_trades = CoincheckWebSocketReader().run()
+    s = PeriodicDataCollectionScheduler(50000000)
+    s.run()
+
+    #btc_trades = CoincheckWebSocketReader().run()
 
     #socket = new WebSocket("wss://ws-api.coincheck.com/")
