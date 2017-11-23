@@ -3,8 +3,10 @@ import websocket
 import time
 import sys
 import datetime
+from google.cloud import bigquery
 
 import json
+
 
 from pubnub.callbacks import SubscribeCallback
 from pubnub.enums import PNStatusCategory
@@ -57,17 +59,23 @@ class MySubscribeCallback(SubscribeCallback):
     def message(self, pubnub, message):
         #print(datetime.datetime.now(), message.message[0]['exec_date']) # execution
         #print(datetime.datetime.now(), message.message['timestamp'])
-        print(message.message)
+        print(message.channel, message.message)
         pass  # Handle new message stored in message.message
  
  
-print("a")
 pubnub.add_listener(MySubscribeCallback())
 print("added_listener")
-pubnub.subscribe().channels('lightning_board_snapshot_FX_BTC_JPY').execute()
+
+#pubnub.subscribe().channels('lightning_board_snapshot_FX_BTC_JPY').execute()
 #pubnub.subscribe().channels('lightning_board_FX_BTC_JPY').execute()
 #pubnub.subscribe().channels('lightning_ticker_FX_BTC_JPY').execute()
 #pubnub.subscribe().channels('lightning_executions_FX_BTC_JPY').execute()
+
+
+# Instantiates a client
+bigquery_client = bigquery.Client()
+bigquery_client.tabledata()
+#dataset = bigquery_client.dataset('trading')
 
 print("subscribed")
 
