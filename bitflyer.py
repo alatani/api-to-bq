@@ -27,7 +27,7 @@ class BQStreamInsersion():
     dataset_id = "trading"
 
     last_client_updated = datetime.datetime(1970,1,1)
-    interval = datetime.timedelta(0, 60, 0) #60秒ごとに再接続
+    interval = datetime.timedelta(0, 30, 0) #30秒ごとに再接続
     _lock = threading.Lock()
 
     def __init__(self, table_id):
