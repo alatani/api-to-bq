@@ -24,6 +24,7 @@ The dataset and table should already exist.
 
 import argparse
 import json
+import pytz
 from pprint import pprint
 
 from google.cloud import bigquery
@@ -32,7 +33,9 @@ from google.cloud import bigquery
 def stream_data(dataset_id, table_id, rows):
     bigquery_client = bigquery.Client("pandora-154702")
     dataset_ref = bigquery_client.dataset(dataset_id)
-    table_ref = dataset_ref.table(table_id)
+
+    suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d%H")
+    table_ref = dataset_ref.table("%s$%s" % (table_id, suffix))
 
     # Get the table from the API so that the schema is available.
     table = bigquery_client.get_table(table_ref)
