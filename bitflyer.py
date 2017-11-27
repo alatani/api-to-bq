@@ -4,7 +4,7 @@ import websocket
 import time
 import sys
 import datetime
-from google.cloud import bigquery
+from google.cloud import bigquery, logging
 
 import json
 
@@ -20,10 +20,16 @@ pnconfig.subscribe_key = 'sub-c-52a9ab50-291b-11e5-baaa-0619f8945a4f'
 #pnconfig.reconnect_policy = PNReconnectionPolicy.LINEAR
 pubnub = PubNub(pnconfig)
 
+PROJECT_ID="pandora-154702"
+logging_client = logging.Client(PROJECT_ID)
+import logging
+logger = logging.getLogger('bitflyer-collector')
+logger.addHandler(logging_client.get_default_handler())
+logger.setLevel(logging.INFO)
 
 class BQStreamInsersion():
     import threading
-    project_id = "pandora-154702"
+    project_id = PROJECT_ID
     dataset_id = "trading"
 
     last_client_updated = datetime.datetime(1970,1,1)
@@ -34,6 +40,9 @@ class BQStreamInsersion():
         self.table_id = table_id
         BQStreamInsersion._refresh_bigquery_client_if_needed()
         self.counter = 0
+
+        self.last_table_updated = datetime.datetime.now(pytz.timezone('UTC'))
+        self.table_update_interval = datetime.timedelta(0, 60, 0)
 
     @classmethod
     def _refresh_bigquery_client_if_needed(cls):
@@ -51,7 +60,7 @@ class BQStreamInsersion():
 
     @classmethod
     def _refresh_bigquery_client(cls):
-        print("refreshing bigquery client")
+        logger.info("refreshing bigquery client")
         cls.bigquery_client = bigquery.Client(cls.project_id)
         cls.dataset_ref = cls.bigquery_client.dataset(cls.dataset_id)
 
@@ -70,28 +79,33 @@ class BQStreamInsersion():
             return row
 
     def stream_data(self, rows):
-        if isinstance(rows, list):
-            pass
-        else:
-            rows = [rows]
+        try:
+            if isinstance(rows, list):
+                pass
+            else:
+                rows = [rows]
 
-        cls = BQStreamInsersion
-        self._refresh_bigquery_client_if_needed()
+            cls = BQStreamInsersion
+            self._refresh_bigquery_client_if_needed()
 
-        self.counter += len(rows)
+            self.counter += len(rows)
 
-        suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d")
-        table_name = "%s$%s" % (self.table_id, suffix)
-        table_ref = cls.dataset_ref.table(table_name)
-        table = cls.bigquery_client.get_table(table_ref)
+            now = datetime.datetime.now(pytz.timezone('UTC'))
+            if self.last_table_updated + self.table_update_interval > now:
+                suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d")
+                table_name = "%s$%s" % (self.table_id, suffix)
+                table_ref = cls.dataset_ref.table(table_name)
+                self.table = cls.bigquery_client.get_table(table_ref)
 
-        errors = cls.bigquery_client.create_rows(table, (self.preprocess_row(r) for r in rows))
-        if len(errors) > 0:
-            print("errors", errors)
-        #if "snapshot" in table_name:
-        #    print(rows)
-        #    print("^^ inserted ^^")
-        print("inserted %d rows to %s" % (self.counter, table_name))
+                logger.info("inserted %d rows to %s" % (self.counter, table_name))
+                self.last_table_updated = now
+
+            errors = cls.bigquery_client.create_rows(self.table, (self.preprocess_row(r) for r in rows))
+            if len(errors) > 0:
+                logger.error("errors", errors)
+        except Error as error:
+            logger.exception(error)
+
 
 class PubNubSubscriber(SubscribeCallback):
     def __init__(self, pubnub):
@@ -100,7 +114,7 @@ class PubNubSubscriber(SubscribeCallback):
         pubnub.add_listener(self)
 
     def add_subscription(self, channel, table):
-        print("added subscription to %s using table %s" % (channel, table))
+        logger.info("added subscription to %s using table %s" % (channel, table))
         self.channel_to_insersion[channel] = BQStreamInsersion(table)
         self.pubnub.subscribe().channels(channel).execute()
 
@@ -109,11 +123,11 @@ class PubNubSubscriber(SubscribeCallback):
  
     def status(self, pubnub, status):
         if status.category == PNStatusCategory.PNUnexpectedDisconnectCategory:
-            print("PNStatusCategory.PNUnexpectedDisconnectCategory")
+            logger.info("PNStatusCategory.PNUnexpectedDisconnectCategory")
             pass  # This event happens when radio / connectivity is lost
  
         elif status.category == PNStatusCategory.PNConnectedCategory:
-            print("PNStatusCategory.PNConnectedCategory")
+            logger.info("PNStatusCategory.PNConnectedCategory")
             # Connect event. You can do stuff like publish, and know you'll get it.
             # Or just use the connected event to confirm you are subscribed for
             # UI / internal notifications, etc
@@ -121,7 +135,7 @@ class PubNubSubscriber(SubscribeCallback):
             pass
 
         elif status.category == PNStatusCategory.PNReconnectedCategory:
-            print("PNStatusCategory.PNReconnectedCategory")
+            logger.info("PNStatusCategory.PNReconnectedCategory")
             # Happens as part of our regular operation. This event happens when
             # radio / connectivity is lost, then regained.
         #elif status.category == PNStatusCategory.PNDecryptionErrorCategory:
@@ -130,9 +144,6 @@ class PubNubSubscriber(SubscribeCallback):
             # encrypt messages and on live data feed it received plain text.
  
     def message(self, pubnub, message):
-        #print(datetime.datetime.now(), message.message[0]['exec_date']) # execution
-        #print(datetime.datetime.now(), message.message['timestamp'])
-        #print(message.channel, message.message)
         insersion = self.channel_to_insersion.get(message.channel)
         insersion.stream_data(message.message)
  
