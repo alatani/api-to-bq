@@ -43,6 +43,7 @@ class BQStreamInsersion():
 
         self.last_logged =  datetime.datetime.now(pytz.timezone('UTC'))
         self.logging_interval = datetime.timedelta(0, 60, 0)
+        self._update_table()
 
     @classmethod
     def _refresh_bigquery_client_if_needed(cls):
@@ -78,6 +79,14 @@ class BQStreamInsersion():
         else:
             return row
 
+    def _update_table(self):
+        cls = BQStreamInsersion
+        suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d")
+        table_name = "%s$%s" % (self.table_id, suffix)
+        table_ref = cls.dataset_ref.table(table_name)
+        self.table = cls.bigquery_client.get_table(table_ref)
+        return table_name
+
     def stream_data(self, rows):
         try:
             if isinstance(rows, list):
@@ -90,19 +99,17 @@ class BQStreamInsersion():
 
             self.counter += len(rows)
 
-            suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d")
-            table_name = "%s$%s" % (self.table_id, suffix)
-            table_ref = cls.dataset_ref.table(table_name)
-            self.table = cls.bigquery_client.get_table(table_ref)
+
+            now = datetime.datetime.now(pytz.timezone('UTC'))
+            if self.last_logged + self.logging_interval < now:
+                table_name = self._update_table()
+                logger.info("inserted %d rows to %s" % (self.counter, table_name))
+                self.last_logged = now
 
             errors = cls.bigquery_client.create_rows(self.table, (self.preprocess_row(r) for r in rows))
             if len(errors) > 0:
                 logger.error("errors", errors)
 
-            now = datetime.datetime.now(pytz.timezone('UTC'))
-            if self.last_logged + self.logging_interval < now:
-                logger.info("inserted %d rows to %s" % (self.counter, table_name))
-                self.last_logged = now
         except Exception as error:
             logger.exception(error)
 
