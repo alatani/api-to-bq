@@ -41,7 +41,7 @@ class BQStreamInsersion():
         BQStreamInsersion._refresh_bigquery_client_if_needed()
         self.counter = 0
 
-        self.last_table_updated = datetime.datetime.now(pytz.timezone('UTC'))
+        self.last_table_updated = datetime.datetime(1970,1,1,0,0)
         self.table_update_interval = datetime.timedelta(0, 60, 0)
 
     @classmethod
