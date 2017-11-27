@@ -1,4 +1,5 @@
 #coding: utf-8
+import pytz
 import websocket
 import time
 import sys
@@ -26,13 +27,13 @@ class BQStreamInsersion():
     dataset_id = "trading"
 
     last_client_updated = datetime.datetime(1970,1,1)
-    interval = datetime.timedelta(0, 60, 0) #60 seconds
+    interval = datetime.timedelta(0, 60, 0) #60秒ごとに再接続
     _lock = threading.Lock()
 
     def __init__(self, table_id):
         self.table_id = table_id
         BQStreamInsersion._refresh_bigquery_client_if_needed()
-
+        self.counter = 0
 
     @classmethod
     def _refresh_bigquery_client_if_needed(cls):
@@ -54,26 +55,49 @@ class BQStreamInsersion():
         cls.bigquery_client = bigquery.Client(cls.project_id)
         cls.dataset_ref = cls.bigquery_client.dataset(cls.dataset_id)
 
+    def preprocess_row(self, row):
+        if not "timestamp" in row:
+            row["timestamp"] = datetime.datetime.now(pytz.timezone('UTC'))
+
+        if "_execution_" in self.table_id:
+            newrow = row
+            newrow["timestamp"] = datetime.datetime.strptime(row["exec_date"][0:-2], "%Y-%m-%dT%H:%M:%S.%f")
+            del newrow["id"]
+            del newrow["sell_child_order_acceptance_id"]
+            del newrow["buy_child_order_acceptance_id"]
+            return newrow
+        else:
+            return row
 
     def stream_data(self, rows):
-        import pytz
+        if isinstance(rows, list):
+            pass
+        else:
+            rows = [rows]
+
         cls = BQStreamInsersion
         self._refresh_bigquery_client_if_needed()
 
+        self.counter += len(rows)
+
         suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d")
-        table_ref = cls.dataset_ref.table("%s$%s" % (self.table_id, suffix))
+        table_name = "%s$%s" % (self.table_id, suffix)
+        table_ref = cls.dataset_ref.table(table_name)
         table = cls.bigquery_client.get_table(table_ref)
 
-        print(rows)
-        errors = cls.bigquery_client.create_rows(table, rows)
-        print("errors", errors)
+        errors = cls.bigquery_client.create_rows(table, (self.preprocess_row(r) for r in rows))
+        if len(errors) > 0:
+            print("errors", errors)
+        #if "snapshot" in table_name:
+        #    print(rows)
+        #    print("^^ inserted ^^")
+        print("inserted %d rows to %s" % (self.counter, table_name))
 
-
-
-class MySubscribeCallback(SubscribeCallback):
+class PubNubSubscriber(SubscribeCallback):
     def __init__(self, pubnub):
         self.pubnub = pubnub
         self.channel_to_insersion = {}
+        pubnub.add_listener(self)
 
     def add_subscription(self, channel, table):
         print("added subscription to %s using table %s" % (channel, table))
@@ -84,21 +108,22 @@ class MySubscribeCallback(SubscribeCallback):
         pass  # handle incoming presence data
  
     def status(self, pubnub, status):
-        pass
-        #if status.category == PNStatusCategory.PNUnexpectedDisconnectCategory:
-        #    pass  # This event happens when radio / connectivity is lost
+        if status.category == PNStatusCategory.PNUnexpectedDisconnectCategory:
+            print("PNStatusCategory.PNUnexpectedDisconnectCategory")
+            pass  # This event happens when radio / connectivity is lost
  
-        #elif status.category == PNStatusCategory.PNConnectedCategory:
-        #    # Connect event. You can do stuff like publish, and know you'll get it.
-        #    # Or just use the connected event to confirm you are subscribed for
-        #    # UI / internal notifications, etc
-        #    #pubnub.publish().channel("awesomeChannel").message("hello!!").async(my_publish_callback)
-        #    pass
+        elif status.category == PNStatusCategory.PNConnectedCategory:
+            print("PNStatusCategory.PNConnectedCategory")
+            # Connect event. You can do stuff like publish, and know you'll get it.
+            # Or just use the connected event to confirm you are subscribed for
+            # UI / internal notifications, etc
+            #pubnub.publish().channel("awesomeChannel").message("hello!!").async(my_publish_callback)
+            pass
 
-        #elif status.category == PNStatusCategory.PNReconnectedCategory:
-        #    pass
-        #    # Happens as part of our regular operation. This event happens when
-        #    # radio / connectivity is lost, then regained.
+        elif status.category == PNStatusCategory.PNReconnectedCategory:
+            print("PNStatusCategory.PNReconnectedCategory")
+            # Happens as part of our regular operation. This event happens when
+            # radio / connectivity is lost, then regained.
         #elif status.category == PNStatusCategory.PNDecryptionErrorCategory:
         #    pass
             # Handle message decryption error. Probably client configured to
@@ -109,53 +134,38 @@ class MySubscribeCallback(SubscribeCallback):
         #print(datetime.datetime.now(), message.message['timestamp'])
         #print(message.channel, message.message)
         insersion = self.channel_to_insersion.get(message.channel)
-        if insersion:
-            rows = message.message
-            if isinstance(rows, list):
-                insersion.stream_data(rows)
-            else:
-                insersion.stream_data([rows])
+        insersion.stream_data(message.message)
  
- 
-bqSubscription = MySubscribeCallback(pubnub)
-pubnub.add_listener(bqSubscription)
 
-#pubnub.subscribe().channels('lightning_board_snapshot_FX_BTC_JPY').execute()
-#bqSubscription.add_subscription('lightning_board_FX_BTC_JPY', 'bf_fx_board_diff_btc_jpy')
-#bqSubscription.add_subscription('lightning_ticker_FX_BTC_JPY', 'bf_fx_ticker_btc_jpy')
+class ApiPolling():
+    def __init__(self, path, table, duration):
+        import sched
+        import time
+        self.scheduler = sched.scheduler(time.time, time.sleep)
+        self.insersion = BQStreamInsersion(table)
+
+        self.path = path
+        self.duration = duration
+
+    def _ontick(self):
+        import requests
+        f = requests.get("http://api.bitflyer.jp/v1/getboard")
+        self.insersion.stream_data(json.loads(f.text))
+
+    def _callback(self, duration):
+        self._ontick()
+        self.scheduler.enter(duration, 1, self._callback, (duration,))
+
+    def run(self):
+        self._ontick()
+        self.scheduler.enter(self.duration, 1, self._callback, (self.duration,))
+        self.scheduler.run()
+ 
+bqSubscription = PubNubSubscriber(pubnub)
+bqSubscription.add_subscription('lightning_board_FX_BTC_JPY', 'bf_fx_board_diff_btc_jpy')
+bqSubscription.add_subscription('lightning_ticker_FX_BTC_JPY', 'bf_fx_ticker_btc_jpy')
 bqSubscription.add_subscription('lightning_executions_FX_BTC_JPY', 'bf_fx_execution_btc_jpy')
+bqSubscription.add_subscription('lightning_board_snapshot_FX_BTC_JPY', 'bf_fx_board_snapshot_btc_jpy')
 
-#pubnub.subscribe().channels('lightning_executions_FX_BTC_JPY').execute()
-#pubnub.subscribe().channels('lightning_board_FX_BTC_JPY').execute()
-#pubnub.subscribe().channels('lightning_ticker_FX_BTC_JPY').execute()
-
-
-print("added_listener")
-
-
-# Instantiates a client
-#bigquery_client = bigquery.Client()
-#bigquery_client.tabledata()
-#dataset = bigquery_client.dataset('trading')
-
-#rows = [
-#    {
-#        "timesatamp": datetime.datetime.now(),
-#        "mid_price": 123456.2,
-#        "bids": [{"price":30.12, "size":10002.31}, {"price":30.15, "size":20002.31}],
-#        "asks": []
-#    },
-#    {
-#        "timesatamp": datetime.datetime.now(),
-#        "mid_price": 123456.2,
-#        "bids": [{"price":30.12, "size":10002.31}, {"price":30.15, "size":20002.31}],
-#        "asks": [{"price":0.92, "size":3130.31}, {"price":40.15, "size":4905.55},{"price":1, "size":0}]
-#    }
-#]
-
-#bq = BQStreamInsersion("test_board")
-#bq.stream_data(rows)
-
-print("subscribed")
-
-
+apiPolling = ApiPolling("http://api.bitflyer.jp/v1/getboard", 'bf_fx_board_snapshot_btc_jpy', 15)
+apiPolling.run()
