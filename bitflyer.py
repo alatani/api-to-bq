@@ -2,11 +2,15 @@
 import pytz
 import websocket
 import time
-import sys
+import sys, os
 import datetime
 from google.cloud import bigquery, logging
 
-import json
+
+import tracemalloc
+tracemalloc.start()
+# ... start your application ...
+
 
 
 from pubnub.callbacks import SubscribeCallback
@@ -26,6 +30,9 @@ import logging
 logger = logging.getLogger('bitflyer-collector')
 logger.addHandler(logging_client.get_default_handler())
 logger.setLevel(logging.INFO)
+
+
+SUICIDE_FLAG=False
 
 class BQStreamInsersion():
     import threading
@@ -102,6 +109,8 @@ class BQStreamInsersion():
 
             now = datetime.datetime.now(pytz.timezone('UTC'))
             if self.last_logged + self.logging_interval < now:
+                import gc
+                gc.collect()
                 table_name = self._update_table()
                 logger.info("inserted %d rows to %s" % (self.counter, table_name))
                 self.last_logged = now
@@ -151,6 +160,8 @@ class PubNubSubscriber(SubscribeCallback):
             # encrypt messages and on live data feed it received plain text.
  
     def message(self, pubnub, message):
+        if SUICIDE_FLAG:
+            os._exit(0)
         insersion = self.channel_to_insersion.get(message.channel)
         insersion.stream_data(message.message)
  
@@ -166,7 +177,7 @@ class ApiPolling():
         self.duration = duration
 
     def _ontick(self):
-        import requests
+        import requests, json
         f = requests.get("http://api.bitflyer.jp/v1/getboard")
         self.insersion.stream_data(json.loads(f.text))
 
@@ -177,13 +188,17 @@ class ApiPolling():
     def run(self):
         self._ontick()
         self.scheduler.enter(self.duration, 1, self._callback, (self.duration,))
-        self.scheduler.run()
+        self.scheduler.run(False)
  
 bqSubscription = PubNubSubscriber(pubnub)
 bqSubscription.add_subscription('lightning_board_FX_BTC_JPY', 'bf_fx_board_diff_btc_jpy')
 bqSubscription.add_subscription('lightning_ticker_FX_BTC_JPY', 'bf_fx_ticker_btc_jpy')
 bqSubscription.add_subscription('lightning_executions_FX_BTC_JPY', 'bf_fx_execution_btc_jpy')
-bqSubscription.add_subscription('lightning_board_snapshot_FX_BTC_JPY', 'bf_fx_board_snapshot_btc_jpy')
 
 apiPolling = ApiPolling("http://api.bitflyer.jp/v1/getboard", 'bf_fx_board_snapshot_btc_jpy', 15)
 apiPolling.run()
+
+
+time.sleep(0.1)
+SUICIDE_FLAG=True
+os._exit(0)
