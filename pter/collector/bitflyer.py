@@ -34,7 +34,14 @@ logger.setLevel(logging.INFO)
 
 SUICIDE_FLAG=False
 
-class BQStreamInsersion():
+class StreamDataProcessing():
+    def __init__(self):
+        pass
+
+    def stream_data(self, rows):
+        pass
+
+class BQStreamInsersion(StreamDataProcessing):
     import threading
     project_id = PROJECT_ID
     dataset_id = "trading"
@@ -94,12 +101,15 @@ class BQStreamInsersion():
         self.table = cls.bigquery_client.get_table(table_ref)
         return table_name
 
+    def _ensure_list_rows(self, rows):
+            if isinstance(rows, list):
+                return rows
+            else:
+                return [rows]
+
     def stream_data(self, rows):
         try:
-            if isinstance(rows, list):
-                pass
-            else:
-                rows = [rows]
+            rows = self._ensure_list_rows(rows)
 
             cls = BQStreamInsersion
             self._refresh_bigquery_client_if_needed()
@@ -199,6 +209,6 @@ apiPolling = ApiPolling("http://api.bitflyer.jp/v1/getboard", 'bf_fx_board_snaps
 apiPolling.run()
 
 
-time.sleep(0.1)
+time.sleep(1800)
 SUICIDE_FLAG=True
 os._exit(0)
