@@ -11,8 +11,6 @@ import tracemalloc
 tracemalloc.start()
 # ... start your application ...
 
-
-
 from pubnub.callbacks import SubscribeCallback
 from pubnub.enums import PNStatusCategory
 from pubnub.pnconfiguration import PNConfiguration
@@ -33,6 +31,7 @@ logger.setLevel(logging.INFO)
 
 
 SUICIDE_FLAG=False
+DRY_RUN=False
 
 class StreamDataProcessing():
     def __init__(self):
@@ -125,9 +124,13 @@ class BQStreamInsersion(StreamDataProcessing):
                 logger.info("inserted %d rows to %s" % (self.counter, table_name))
                 self.last_logged = now
 
-            errors = cls.bigquery_client.create_rows(self.table, (self.preprocess_row(r) for r in rows))
-            if len(errors) > 0:
-                logger.error("errors", errors)
+            records =  (self.preprocess_row(r) for r in rows)
+            if DRY_RUN:
+                print(list(records))
+            else:
+              errors = cls.bigquery_client.create_rows(self.table, records)
+              if len(errors) > 0:
+                  logger.error("errors", errors)
 
         except Exception as error:
             logger.exception(error)
