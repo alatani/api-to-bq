@@ -1,3 +1,4 @@
+websocket
 websocket-client
 pubnub>=4.0.13
 google-cloud-bigquery

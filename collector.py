@@ -19,9 +19,11 @@ from pubnub.enums import PNStatusCategory
 from pubnub.pnconfiguration import PNConfiguration
 from pubnub.pubnub import PubNub
 
-DRY_RUN = False
+import sys
+
+DRY_RUN = True
 SUICIDE_FLAG = False
-PROJECT_ID = "pandora-154702"
+PROJECT_ID = sys.env["GLOUCD_PROJECT"]
 
 pnconfig = PNConfiguration()
 
@@ -49,51 +51,40 @@ class StreamDataProcessing():
 
 class BQStreamInsersion(StreamDataProcessing):
     import threading
-    project_id = PROJECT_ID
-    dataset_id = "trading"
-
-    last_client_updated = datetime.datetime(1970, 1, 1)
-    interval = datetime.timedelta(0, 30, 0)  # 30秒ごとに再接続
-    _lock = threading.Lock()
 
     def __init__(self, table_id):
+        self.project_id = PROJECT_ID
+        self.dataset_id = "trading"
         self.table_id = table_id
-        BQStreamInsersion._refresh_bigquery_client_if_needed()
+        self._refresh_bigquery_client()
         self.counter = 0
 
         self.last_logged = datetime.datetime.now(pytz.timezone('UTC'))
         self.logging_interval = datetime.timedelta(0, 60, 0)
         self._update_table()
 
-    @classmethod
-    def _refresh_bigquery_client_if_needed(cls):
-        def check_refresh_needed():
-            now = datetime.datetime.now()
-            with cls._lock:
-                diff = now - cls.last_client_updated
-                if diff > cls.interval:
-                    cls.last_client_updated = now
-                    return True
-                else:
-                    return False
-
-        if check_refresh_needed():
-            cls._refresh_bigquery_client()
-
-    @classmethod
-    def _refresh_bigquery_client(cls):
+    def _refresh_bigquery_client(self):
         logger.info("refreshing bigquery client")
-        cls.bigquery_client = bigquery.Client(cls.project_id)
-        cls.dataset_ref = cls.bigquery_client.dataset(cls.dataset_id)
+        self.bigquery_client = bigquery.Client(self.project_id)
+        self.dataset_ref = self.bigquery_client.dataset(self.dataset_id)
 
     def preprocess_row(self, row):
+        utc = pytz.timezone('UTC')
+
         if not "timestamp" in row:
             row["timestamp"] = datetime.datetime.now(pytz.timezone('UTC'))
 
+        if type(row["timestamp"]) == str:
+            row["timestamp"] = datetime.datetime.strptime(row["timestamp"][0:-2], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=utc)
+
+        if "ltp" in row:
+            del row["ltp"]
+
         if "bf_fx_execution_" in self.table_id:
             newrow = row
-            newrow["timestamp"] = datetime.datetime.strptime(row["exec_date"][0:-2], "%Y-%m-%dT%H:%M:%S.%f")
+            newrow["timestamp"] = datetime.datetime.strptime(row["exec_date"][0:-2], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=utc)
             del newrow["id"]
+            del newrow["exec_date"]
             del newrow["sell_child_order_acceptance_id"]
             del newrow["buy_child_order_acceptance_id"]
             return newrow
@@ -101,12 +92,11 @@ class BQStreamInsersion(StreamDataProcessing):
             return row
 
     def _update_table(self):
-        cls = BQStreamInsersion
         suffix = datetime.datetime.now(pytz.timezone('UTC')).strftime("%Y%m%d")
-        table_name = "%s$%s" % (self.table_id, suffix)
-        table_ref = cls.dataset_ref.table(table_name)
-        self.table = cls.bigquery_client.get_table(table_ref)
-        return table_name
+        self.table_name = "%s$%s" % (self.table_id, suffix)
+        table_ref = self.dataset_ref.table(self.table_name)
+        self.table = self.bigquery_client.get_table(table_ref)
+        return self.table_name
 
     def _ensure_list_rows(self, rows):
         if isinstance(rows, list):
@@ -118,31 +108,37 @@ class BQStreamInsersion(StreamDataProcessing):
         try:
             rows = self._ensure_list_rows(rows)
 
-            cls = BQStreamInsersion
-            self._refresh_bigquery_client_if_needed()
 
             self.counter += len(rows)
 
             now = datetime.datetime.now(pytz.timezone('UTC'))
             if self.last_logged + self.logging_interval < now:
-                import gc
-                gc.collect()
-                table_name = self._update_table()
-                logger.info("inserted %d rows to %s" % (self.counter, table_name))
+                #import gc
+                #gc.collect()
+                #table_name = self._update_table()
+                logger.info("inserted %d rows to %s" % (self.counter, self.table_name))
                 self.last_logged = now
 
             records = list(self.preprocess_row(r) for r in rows)
 
             if DRY_RUN:
-                print(records)
+                if len(records) > 0:
+                    print(records)
             else:
                 if len(records) > 0:
-                    errors = cls.bigquery_client.create_rows(self.table, records)
+                    #errors = self.bigquery_client.create_rows(self.table, records)
+                    if "ticker" in self.table_name:
+                        t1 = datetime.datetime.now()
+                        errors = self.bigquery_client.insert_rows(self.table, records)
+                        t2 = datetime.datetime.now()
+                        print(t2-t1)
+                    else:
+                        errors = self.bigquery_client.insert_rows(self.table, records)
                     if len(errors) > 0:
                         logger.error("errors", errors)
 
         except Exception as error:
-            logger.exception(error)
+            logger.error(error)
 
 
 class PubNubSubscriber(SubscribeCallback):
@@ -203,7 +199,7 @@ class ApiPolling():
           data = json.loads(f.text)
           self.insersion.stream_data(self.preprocess_data(data))
         except Exception as error:
-            logger.exception(error)
+            logger.error(error)
 
     def preprocess_data(self, data):
         return data
@@ -224,7 +220,6 @@ class CCBoardApiPolling(ApiPolling):
         super().__init__(scheduler, path, table, duration)
 
     def preprocess_data(self, data):
-        print(data)
         asks = list({"price": float(row[0]), "size": float(row[1])} for row in data["asks"])
         bids = list({"price": float(row[0]), "size": float(row[1])} for row in data["bids"])
 
@@ -259,22 +254,22 @@ bqSubscription.add_subscription('lightning_board_FX_BTC_JPY', 'bf_fx_board_diff_
 bqSubscription.add_subscription('lightning_ticker_FX_BTC_JPY', 'bf_fx_ticker_btc_jpy')
 bqSubscription.add_subscription('lightning_executions_FX_BTC_JPY', 'bf_fx_execution_btc_jpy')
 
-bfApiPolling = ApiPolling(scheduler, "http://api.bitflyer.jp/v1/getboard", 'bf_fx_board_snapshot_btc_jpy', 15)
-bfApiPolling.run()
+#bfApiPolling = ApiPolling(scheduler, "http://api.bitflyer.jp/v1/getboard", 'bf_fx_board_snapshot_btc_jpy', 15)
+#bfApiPolling.run()
+#
+#time.sleep(2)
+#ccApiPolling = CCBoardApiPolling(scheduler, "https://coincheck.com/api/order_books", 'cc_board_snapshot_btc_jpy', 15)
+#ccApiPolling.run()
+#
+#time.sleep(2)
+#ccTradesApiPolling = CCTradesApiPolling(scheduler, "https://coincheck.com/api/trades?pair=btc_jpy", 'cc_execution_btc_jpy', 5)
+#ccTradesApiPolling.run()
 
-time.sleep(1)
-ccApiPolling = CCBoardApiPolling(scheduler, "https://coincheck.com/api/order_books", 'cc_board_snapshot_btc_jpy', 15)
-ccApiPolling.run()
 
-time.sleep(1)
-ccTradesApiPolling = CCTradesApiPolling(scheduler, "https://coincheck.com/api/trades?pair=btc_jpy", 'cc_execution_btc_jpy', 5)
-ccTradesApiPolling.run()
-
-
-# メモリリーク対策のため30分ごとに自殺する
+# メモリリーク対策のため5分ごとに自殺する
 def suicide():
     SUICIDE_FLAG = True
     os._exit(0)
 
-scheduler.enter(1800, 1, suicide)
+scheduler.enter(600, 1, suicide)
 scheduler.run()
